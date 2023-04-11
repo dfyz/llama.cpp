@@ -1795,16 +1795,24 @@ static inline __m512 dot_q4_0_twoblocks_avx512(
 
     const __m512i bytes_0 = bytes_from_q4_0_twoblocks_avx512( blocks_0 );
     const __m512i bytes_1 = bytes_from_q4_0_twoblocks_avx512( blocks_1 );
-    const __m512i offset_8 = _mm512_set1_epi8( 8 );
-    const __m512i bytes_1_with_offset = _mm512_sub_epi8( bytes_1, offset_8 );
+    const __m512i plus_8 = _mm512_set1_epi8( 8 );
+    const __m512i bytes_1_minus_8 = _mm512_sub_epi8( bytes_1, plus_8 );
 
-    const __m512i zero = _mm512_setzero_epi32();
-    const __m512i prod_0 = _mm512_dpbusds_epi32( zero, bytes_0, bytes_1_with_offset );
-    const __m512i prod_1 = _mm512_dpbusds_epi32( zero, offset_8, bytes_1_with_offset );
-    const __m512i diff_int = _mm512_sub_epi32( prod_0, prod_1 );
-    const __m512 diff_float = _mm512_cvtepi32_ps( diff_int );
+#ifdef __AVX512VNNI__
+    const __m512i dot_init = _mm512_set1_epi32( 4 * 64 );
+    const __m512i minus_8 = _mm512_set1_epi8( -8 );
+    const __m512i prod_0 = _mm512_dpbusds_epi32( dot_init, bytes_1, minus_8 );
+    const __m512i final_res_int = _mm512_dpbusds_epi32( prod_0, bytes_0, bytes_1_minus_8 );
+#else
+    const __m512i one = _mm512_set1_epi16( 1 );
+    const __m512i prod_0 = _mm512_maddubs_epi16( bytes_0, bytes_1_minus_8 );
+    const __m512i prod_1 = _mm512_maddubs_epi16( plus_8, bytes_1_minus_8 );
+    const __m512i diff = _mm512_sub_epi16( prod_0, prod_1 );
+    const __m512i final_res_int = _mm512_madd_epi16( diff, one );
+#endif
 
-    return _mm512_fmadd_ps( permuted_scales, diff_float, acc );
+    const __m512 final_res_float = _mm512_cvtepi32_ps( final_res_int );
+    return _mm512_fmadd_ps( permuted_scales, final_res_float, acc );
 }
 #endif
 
