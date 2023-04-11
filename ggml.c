@@ -1774,7 +1774,19 @@ static inline __m512 dot_q4_0_twoblocks_avx512(
     const __m512i blocks_0 = _mm512_loadu_si512( &x[i] );
     const __m512i blocks_1 = _mm512_loadu_si512( &y[i] );
 
-    const __m512 scales = _mm512_maskz_mul_ps( 0x21, (__m512)blocks_0, (__m512)blocks_1 );
+    const __mmask16 scale_mul_mask = 0x21;
+    const __m512 blocks_0_float = _mm512_castsi512_ps( blocks_0 );
+    const __m512 blocks_1_float = _mm512_castsi512_ps( blocks_1 );
+#ifdef __clang__
+    __m512i scales;
+    __asm__(
+        "vmulps %1, %2, %0%{%3%}"
+        : "=v" ( scales )
+        : "vm" ( blocks_0_float ), "v" ( blocks_1_float ), "Yk" ( scale_mul_mask )
+    );
+#else
+    const __m512 scales = _mm512_maskz_mul_ps( scale_mul_mask, blocks_0_float, blocks_1_float );
+#endif
     const __m512i scale_perm = _mm512_set_epi32(
         5, 5, 5, 5, 5, 5, 5, 5,
         0, 0, 0, 0, 0, 0, 0, 0
