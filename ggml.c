@@ -1742,13 +1742,21 @@ inline static void ggml_vec_dot_f32(const int n, float * restrict s, const float
 
 #if __AVX512F__ && QK == 32
 static inline __m512i bytes_from_q4_0_twoblocks_avx512( const __m512i blocks ) {
+#ifdef __AVX512VBMI__
     const __m512i byte_perm = _mm512_set_epi8(
         39, 38, 39, 38, 37, 36, 37, 36, 35, 34, 35, 34, 33, 32, 33, 32,
         31, 30, 31, 30, 29, 28, 29, 28, 27, 26, 27, 26, 25, 24, 25, 24,
         19, 18, 19, 18, 17, 16, 17, 16, 15, 14, 15, 14, 13, 12, 13, 12,
-        11, 10, 11, 10,  9,  8,  9,  8,  7,  6,  7,  6,  5,  4,  5,  4
+        11, 10, 11, 10, 9, 8, 9, 8, 7, 6, 7, 6, 5, 4, 5, 4
     );
     const __m512i permuted = _mm512_permutexvar_epi8( byte_perm, blocks );
+#else
+    const __m512i word_perm = _mm512_set_epi16(
+        19, 19, 18, 18, 17, 17, 16, 16, 15, 15, 14, 14, 13, 13, 12, 12,
+         9,  9,  8,  8,  7,  7,  6,  6,  5,  5,  4,  4,  3,  3,  2,  2
+    );
+    const __m512i permuted = _mm512_permutexvar_epi16( word_perm, blocks );
+#endif
 
     const __mmask32 shift_mask = 0xaaaaaaaa;
     const __m512i shifted = _mm512_mask_srai_epi16( permuted, shift_mask, permuted, 4 );
