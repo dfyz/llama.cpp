@@ -111,7 +111,7 @@ typedef void* thread_ret_t;
 #if UINTPTR_MAX == 0xFFFFFFFF
     #define GGML_MEM_ALIGN 4
 #else
-    #define GGML_MEM_ALIGN 16
+    #define GGML_MEM_ALIGN 64
 #endif
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
@@ -582,9 +582,12 @@ typedef struct {
 static_assert(sizeof(block_q4_1) == sizeof(float) * 2 + QK / 2, "wrong q4_1 block size/padding");
 
 // reference implementation for deterministic creation of model files
-static void quantize_row_q4_0_reference(const float * restrict x, block_q4_0 * restrict y, int k) {
+static void quantize_row_q4_0_reference(const float * restrict x, void * restrict y, int k) {
     assert(k % QK == 0);
     const int nb = k / QK;
+
+    uint8_t * elements = y;
+    float * scales = (float * )(elements + (QK / 2) * nb);
 
     uint8_t pp[QK/2];
 
@@ -599,7 +602,7 @@ static void quantize_row_q4_0_reference(const float * restrict x, block_q4_0 * r
         const float d = amax / ((1 << 3) - 1);
         const float id = d ? 1.0f/d : 0.0f;
 
-        y[i].d = d;
+        *scales++ = d;
 
         for (int l = 0; l < QK; l += 2) {
             const float v0 = x[i*QK + l + 0]*id;
@@ -614,17 +617,15 @@ static void quantize_row_q4_0_reference(const float * restrict x, block_q4_0 * r
             pp[l/2] = vi0 | (vi1 << 4);
         }
 
-        memcpy(y[i].qs, pp, sizeof(pp));
+        memcpy(elements, pp, sizeof(pp));
+        elements += QK / 2;
     }
 }
 
 static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int k) {
     assert(k % QK == 0);
-    const int nb = k / QK;
 
-    block_q4_0 * restrict y = vy;
-
-#if defined(__POWER9_VECTOR__)
+#if 0 && defined(__POWER9_VECTOR__)
     const vector float v85 = vec_splats(8.5f);
     for (int i = 0; i < nb; i++) {
         float amax = 0.0f; // absolute max
@@ -662,7 +663,7 @@ static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int 
             pb[2*l + 1] = vec_extract(vi, 2) | (vec_extract(vi, 3) << 4);
         }
     }
-#elif __ARM_NEON
+#elif 0 && __ARM_NEON
     for (int i = 0; i < nb; i++) {
         float32x4_t srcv [8];
         float32x4_t asrcv[8];
@@ -691,7 +692,7 @@ static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int 
             y[i].qs[2*l + 1] = vgetq_lane_s32(vi, 2) | (vgetq_lane_s32(vi, 3) << 4);
         }
     }
-#elif defined(__AVX2__)
+#elif 0 && defined(__AVX2__)
     for (int i = 0; i < nb; i++) {
         // Load elements into 4 AVX vectors
         __m256 v0 = _mm256_loadu_ps( x );
@@ -756,7 +757,7 @@ static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int 
         __m128i res = packNibbles( i0 );
         _mm_storeu_si128( ( __m128i* )y[i].qs, res );
     }
-#elif defined(__AVX__)
+#elif 0 && defined(__AVX__)
     for (int i = 0; i < nb; i++) {
         // Load elements into 4 AVX vectors
         __m256 v0 = _mm256_loadu_ps( x );
@@ -830,7 +831,7 @@ static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int 
         __m128i res = packNibbles( ni0, ni4 );
         _mm_storeu_si128( ( __m128i* )y[i].qs, res );
     }
-#elif defined(__wasm_simd128__)
+#elif 0 && defined(__wasm_simd128__)
     for (int i = 0; i < nb; i++) {
         float amax = 0.0f; // absolute max
 
@@ -865,7 +866,7 @@ static void quantize_row_q4_0(const float * restrict x, void * restrict vy, int 
     }
 #else
     // scalar
-    quantize_row_q4_0_reference(x, y, k);
+    quantize_row_q4_0_reference(x, vy, k);
 #endif
 }
 
@@ -1890,17 +1891,19 @@ static inline __m512i bytes_from_q4_0_twoblocks_avx512( const __m512i blocks ) {
 
 static inline __m512 dot_q4_0_twoblocks_avx512(
     __m512 acc,
-    const block_q4_0 * restrict x,
-    const block_q4_0 * restrict y,
+    const uint8_t * restrict x,
+    const uint8_t * restrict y,
+    const float * scales_x,
+    const float * scales_y,
     int i
 ) {
     // A pair of Q4_0 blocks spans 40 bytes, while an AVX-512 register has 64. The remaining 24 bytes
     // can potentially be unaddressable, so we make sure to mask them out before the load, even though
     // we don't use them at all. This might hurt the performance slightly, since the compiler is forced
     // to use e.g. `VMOVDQU64 REG, MASK, [ADDR] + VPERMB ..., REG` instead of just `VPERMB ..., [ADDR]`.
-    const __mmask8 load_mask = 0x1f;
-    const __m512i blocks_0 = _mm512_maskz_loadu_epi64( load_mask, &x[i] );
-    const __m512i blocks_1 = _mm512_maskz_loadu_epi64( load_mask, &y[i] );
+    const __mmask8 load_mask = 0x0f;
+    const __m512i blocks_0 = _mm512_maskz_load_epi64( load_mask, x + (QK / 2) * i );
+    const __m512i blocks_1 = _mm512_maskz_load_epi64( load_mask, y + (QK / 2) * i );
 
     // We want to multiply the scales, so we interpret both registers as 16 32-bit floats:
     // +----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
@@ -1914,29 +1917,12 @@ static inline __m512 dot_q4_0_twoblocks_avx512(
     // +----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
     // |    |    |    |    |    |    | xx | xx | xx | xx |  D | xx | xx | xx | xx |  C |
     // +----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+----+
-    const __m512 blocks_0_float = _mm512_castsi512_ps( blocks_0 );
-    const __m512 blocks_1_float = _mm512_castsi512_ps( blocks_1 );
-    // We absolutely shouldn't touch the floats marked with `xx`: they contain some
-    // random data, which might very well underflow. At least on Intel, this leads
-    // to a huge penalty that can't be ignored (easily 100x or more) unless you
-    // compile your code with something like `-ffast-math` to enable FTZ/DAZ flags.
-    // (and ggml can't assume that you do)...
-    const __mmask16 scale_mul_mask = 0x21;
-#ifdef __clang__
-    // ...however, clang decides to optimize the multiplication mask away:
-    // https://godbolt.org/z/P8PqdsfvW
-    // gcc and MSVC do the sane thing. This horrible workaround forces clang to emit the mask.
-    __m512i scales;
-    __asm__(
-        "vmulps %1, %2, %0%{%3%}"
-        : "=v" ( scales )
-        : "vm" ( blocks_0_float ), "v" ( blocks_1_float ), "Yk" ( scale_mul_mask )
-    );
-#else
-    const __m512 scales = _mm512_maskz_mul_ps( scale_mul_mask, blocks_0_float, blocks_1_float );
-#endif
+    const __mmask16 scales_load_mask = 0x3;
+    const __m512 blocks_0_float = _mm512_maskz_load_ps( scales_load_mask, scales_x + i );
+    const __m512 blocks_1_float = _mm512_maskz_load_ps( scales_load_mask, scales_y + i );
+    const __m512 scales = _mm512_mul_ps( blocks_0_float, blocks_1_float );
     const __m512i scale_perm = _mm512_set_epi32(
-        5, 5, 5, 5, 5, 5, 5, 5,
+        1, 1, 1, 1, 1, 1, 1, 1,
         0, 0, 0, 0, 0, 0, 0, 0
     );
     const __m512 permuted_scales = _mm512_permutexvar_ps( scale_perm, scales );
@@ -2040,9 +2026,6 @@ static void ggml_vec_dot_q4_0(const int n, float * restrict s, const void * rest
     assert(n % QK == 0);
     assert(nb % 2 == 0);
 
-    const block_q4_0 * restrict x = vx;
-    const block_q4_0 * restrict y = vy;
-
     float sumf = 0.0;
 
 #if defined(__ARM_NEON)
@@ -2126,6 +2109,11 @@ static void ggml_vec_dot_q4_0(const int n, float * restrict s, const void * rest
     __m512 acc0 = _mm512_setzero_ps();
     __m512 acc1 = _mm512_setzero_ps();
 
+    const uint8_t * elements_x = vx;
+    const uint8_t * elements_y = vy;
+    const float * scales_x = (const float*)(elements_x + (QK / 2) * nb);
+    const float * scales_y = (const float*)(elements_y + (QK / 2) * nb);
+
     const int superblock_size = 16;
 
     const int superblock_count = nb / superblock_size;
@@ -2133,19 +2121,19 @@ static void ggml_vec_dot_q4_0(const int n, float * restrict s, const void * rest
     for (int superblock_ix = 0; superblock_ix < superblock_count; superblock_ix += 1) {
         int i = superblock_ix * superblock_size;
 
-        acc0 = dot_q4_0_twoblocks_avx512( acc0, x, y, i+0 );
-        acc1 = dot_q4_0_twoblocks_avx512( acc1, x, y, i+2 );
-        acc0 = dot_q4_0_twoblocks_avx512( acc0, x, y, i+4 );
-        acc1 = dot_q4_0_twoblocks_avx512( acc1, x, y, i+6 );
-        acc0 = dot_q4_0_twoblocks_avx512( acc0, x, y, i+8 );
-        acc1 = dot_q4_0_twoblocks_avx512( acc1, x, y, i+10 );
-        acc0 = dot_q4_0_twoblocks_avx512( acc0, x, y, i+12 );
-        acc1 = dot_q4_0_twoblocks_avx512( acc1, x, y, i+14 );
+        acc0 = dot_q4_0_twoblocks_avx512( acc0, elements_x, elements_y, scales_x, scales_y, i+0 );
+        acc1 = dot_q4_0_twoblocks_avx512( acc1, elements_x, elements_y, scales_x, scales_y, i+2 );
+        acc0 = dot_q4_0_twoblocks_avx512( acc0, elements_x, elements_y, scales_x, scales_y, i+4 );
+        acc1 = dot_q4_0_twoblocks_avx512( acc1, elements_x, elements_y, scales_x, scales_y, i+6 );
+        acc0 = dot_q4_0_twoblocks_avx512( acc0, elements_x, elements_y, scales_x, scales_y, i+8 );
+        acc1 = dot_q4_0_twoblocks_avx512( acc1, elements_x, elements_y, scales_x, scales_y, i+10 );
+        acc0 = dot_q4_0_twoblocks_avx512( acc0, elements_x, elements_y, scales_x, scales_y, i+12 );
+        acc1 = dot_q4_0_twoblocks_avx512( acc1, elements_x, elements_y, scales_x, scales_y, i+14 );
     }
 
     // Remainders
     for (int i = superblock_count * superblock_size; i < nb; i += 2) {
-        acc0 = dot_q4_0_twoblocks_avx512( acc0, x, y, i );
+        acc0 = dot_q4_0_twoblocks_avx512( acc0, elements_x, elements_y, scales_x, scales_y, i );
     }
 
     // Horizontal sum of all lanes of the accumulator

@@ -24,7 +24,7 @@
 
 float tensor_sum_elements(struct ggml_tensor * tensor) {
     float sum = 0;
-    if (tensor->type==6) {
+    if (tensor->type==GGML_TYPE_F32) {
         for (int j = 0; j < tensor->ne[1]; j++) {
             for (int k = 0; k < tensor->ne[0]; k++) {
                 sum +=  ((float *) tensor->data)[j*tensor->ne[0]+k];
@@ -252,7 +252,7 @@ int main(int argc, char ** argv)  {
         float delta = abs(sum_of_Q4_result - sum_of_F32_reference);
         float allowed_delta = (sum_of_F32_reference) / 1000 / 1000; //  Let's accept an epsilon of 10^-6
 
-        if (delta > allowed_delta)  {
+        if (isnan(delta) || delta > allowed_delta)  {
             printf("\nABORT - ERROR in Matrix Multiplication result - expected %6.2f, got %6.2f (delta %6.2f > allowed_delta %6.2f)\n",
                 sum_of_F32_reference,
                 sum_of_Q4_result,

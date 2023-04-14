@@ -264,7 +264,7 @@ struct ggml_object {
 
     struct ggml_object * next;
 
-    char padding[8];
+    char padding[8 + 32];
 };
 
 static const size_t GGML_OBJECT_SIZE = sizeof(struct ggml_object);
@@ -299,7 +299,7 @@ struct ggml_tensor {
     int64_t perf_time_us;
 
     void * data;
-    char padding[8];
+    char padding[8 + 16];
 };
 
 // computation graph
