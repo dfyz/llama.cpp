@@ -2865,7 +2865,7 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
             _mm512_permutexvar_ps(scale_1_perm, blocks_1_float)
         );
 
-        const __m512i bytes_0 = bytes_from_q4_0_twoblocks_avx512(blocks_0);
+        const __m512i bytes_0_raw = bytes_from_q4_0_twoblocks_avx512(blocks_0);
 
         const __m512i bytes_1_perm = _mm512_set_epi8(
              0,  0,  0,  0,  0,  0,  0,  0, 63, 61, 62, 60, 59, 57, 58, 56,
@@ -2877,29 +2877,8 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
         const __m512i bytes_1 = _mm512_mask_loadu_epi64(bytes_1_prefix, 0x80, ((const char*)&y[i]) + 8);
 
         const __m512i plus_8 = _mm512_set1_epi8(8);
-        const __m512i bytes_1_minus_8 = _mm512_sub_epi8(bytes_1, plus_8);
-
-    #ifdef __AVX512VNNI__
-        // We have VPDPBUSDS in AVX512-VNNI, which does exactly what we want, but with a catch:
-        // the *left* operand is supposed to be unsigned, while Q4_0 quantization subtracts 8
-        // from each nibble, so they can be negative. So, instead of `(bytes_0 - 8) * (bytes_1 - 8)`,
-        // we compute `bytes_0 * (bytes_1 - 8) + bytes_1 * (-8) + 64`. VPDPBUSDS uses an accumulator,
-        // which means we only need 2 instructions.
-        const __m512i dot_init = _mm512_set1_epi32(4 * 64);
-        const __m512i minus_8 = _mm512_set1_epi8(-8);
-        const __m512i prod_0 = _mm512_dpbusds_epi32(dot_init, bytes_1, minus_8);
-        const __m512i final_res_int = _mm512_dpbusds_epi32(prod_0, bytes_0, bytes_1_minus_8);
-    #else
-        // As a fallback, we have VPMADDUBSW in AVX512-BW, which uses 16-bit products instead of 32-bit ones.
-        // It has the same catch as VPDPBUSDS: the left operand should be unsigned.
-        // This is essentially the AVX-512 version of the AVX-2 trick used by GH user Const-me
-        //   ref: https://gist.github.com/Const-me/4d30e1fc767ab314596e16e90f53b6f4#file-matmultest-cpp-L119
-        const __m512i one = _mm512_set1_epi16(1);
-        const __m512i prod_0 = _mm512_maddubs_epi16(bytes_0, bytes_1_minus_8);
-        const __m512i prod_1 = _mm512_maddubs_epi16(plus_8, bytes_1_minus_8);
-        const __m512i diff = _mm512_sub_epi16(prod_0, prod_1);
-        const __m512i final_res_int = _mm512_madd_epi16(diff, one);
-    #endif
+        const __m512i bytes_0 = _mm512_sub_epi8(bytes_0_raw, plus_8);
+        const __m512i final_res_int = _mm512_dpbusds_epi32(_mm512_setzero_epi32(), bytes_0, bytes_1);
 
         // Finally, we multiply the permuted scales and the 32-bit dot products, then accumulate.
         const __m512 final_res_float = _mm512_cvtepi32_ps(final_res_int);
