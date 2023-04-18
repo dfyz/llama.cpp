@@ -2846,7 +2846,7 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
 
     for (int i = 0; i < nb; i += 2) {
         const __m512i blocks_0 = _mm512_maskz_loadu_epi64(0x1f, &x[i]);
-        const __m512i blocks_1 = _mm512_load_si512(&y[i]);
+        const __m512i blocks_1 = _mm512_loadu_si512(&y[i]);
 
         const __m512 blocks_0_float = _mm512_castsi512_ps(blocks_0);
         const __m512 blocks_1_float = _mm512_castsi512_ps(blocks_1);
@@ -2873,10 +2873,7 @@ static void ggml_vec_dot_q4_0_q8_0(const int n, float * restrict s, const void *
             35, 33, 34, 32, 31, 29, 30, 28, 27, 25, 26, 24, 23, 21, 22, 20,
             19, 17, 18, 16, 15, 13, 14, 12, 11,  9, 10,  8,  7,  5,  6,  4
         );
-        const __m512i bytes_1_prefix = _mm512_permutexvar_epi8(
-            bytes_1_perm,
-            _mm512_loadu_si512(&y[i])
-        );
+        const __m512i bytes_1_prefix = _mm512_permutexvar_epi8(bytes_1_perm, blocks_1);
         const __m512i bytes_1 = _mm512_mask_loadu_epi64(bytes_1_prefix, 0x80, ((const char*)&y[i]) + 8);
 
         const __m512i plus_8 = _mm512_set1_epi8(8);
