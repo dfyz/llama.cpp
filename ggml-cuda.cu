@@ -228,7 +228,7 @@ static __global__ void dequantize_block_q8_0(const void * vx, float * y) {
 template <int block_size> static __global__ void dequantize_mul_mat_q4_0(const void * vx, const float * y, float * dst, const int ncols) {
     const block_q4_0 * x = (const block_q4_0 *) vx;
 
-    const int row = blockIdx.x;
+    const int row = blockIdx.x * 2 + threadIdx.y;
     const int tid = threadIdx.x;
 
     float tmp = 0;
@@ -305,9 +305,12 @@ static void dequantize_mul_mat_q4_0_cuda(const void * vx, const float * y, float
     //     }
     // }
     // dequantize_mul_mat_q4_0<<<nrows, block_size, 0, stream>>>(vx, y, dst, ncols);
-    const int block_size = 32;
-    GGML_ASSERT(ncols % block_size == 0);
-    dequantize_mul_mat_q4_0<block_size><<<nrows, block_size, 0, stream>>>(vx, y, dst, ncols);
+    const int reduce_size = 32;
+    const int rows_per_block = 2;
+    const dim3 block_size(reduce_size, rows_per_block, 1);
+    GGML_ASSERT(nrows % rows_per_block == 0);
+    GGML_ASSERT(ncols % reduce_size == 0);
+    dequantize_mul_mat_q4_0<reduce_size><<<nrows / rows_per_block, block_size, 0, stream>>>(vx, y, dst, ncols);
 }
 
 // TODO: optimize
