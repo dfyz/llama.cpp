@@ -225,16 +225,18 @@ static __global__ void dequantize_block_q8_0(const void * vx, float * y) {
     }
 }
 
-template <int block_size> static __global__ void dequantize_mul_mat_q4_0(const void * vx, const float * y, float * dst, const int ncols) {
+template <int reduce_size> static __global__ void dequantize_mul_mat_q4_0(const void * vx, const float * y, float * dst, const int ncols) {
     const block_q4_0 * x = (const block_q4_0 *) vx;
 
     const int row = blockIdx.x * 2 + threadIdx.y;
     const int tid = threadIdx.x;
 
-    float tmp = 0;
+    __shared__ float full_tmp[reduce_size * 2]; // separate sum for each thread
+    float* tmp = full_tmp + reduce_size * threadIdx.y;
+    tmp[tid] = 0;
 
-    for (int i = 0; i < ncols/block_size; i += 2) {
-        const int col = i*block_size + 2*tid;
+    for (int i = 0; i < ncols/reduce_size; i += 2) {
+        const int col = i*reduce_size + 2*tid;
 
         // dequantize
         const float d = x[(row*ncols + col)/QK4_0].d;
@@ -250,16 +252,18 @@ template <int block_size> static __global__ void dequantize_mul_mat_q4_0(const v
         const float v1 = (vi1 - 8)*d;
 
         // matrix multiplication
-        tmp += v0 * y[col + 0];
-        tmp += v1 * y[col + 1];
+        tmp[tid] += v0 * y[col + 0];
+        tmp[tid] += v1 * y[col + 1];
     }
 
-#pragma unroll
-    for (int mask = 16; mask > 0; mask >>= 1) {
-        tmp += __shfl_xor_sync(0xffffffff, tmp, mask, 32);
+    for (int s=reduce_size/2; s>0; s>>=1) {
+        if (tid < s) {
+            tmp[tid] += tmp[tid + s];
+        }
+        __syncthreads();
     }
     if (tid == 0) {
-        dst[row] = tmp;
+        dst[row] = tmp[0];
     }
 }
 
